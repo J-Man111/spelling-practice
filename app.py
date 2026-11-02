@@ -24,6 +24,7 @@ state.setdefault("word_count", 0)
 state.setdefault("current", 0)
 state.setdefault("correct_count", 0)
 state.setdefault("feedback", None)
+state.setdefault("mistakes", [])
 state.setdefault("speak_id", 0)
 
 
@@ -49,6 +50,7 @@ def start_practice():
     state.current = 0
     state.correct_count = 0
     state.feedback = None
+    state.mistakes = []
     go("practice")
 
 
@@ -129,6 +131,7 @@ elif state.screen == "practice":
             state.feedback = (True, "Correct!")
             st.rerun()
         else:
+            state.mistakes.append({"Your spelling": answer, "Correct spelling": word})
             state.feedback = (False, f"Incorrect. The correct word is: {word}")
             st.rerun()
     else:
@@ -145,6 +148,11 @@ elif state.screen == "practice":
 elif state.screen == "results":
     st.subheader("Practice session completed")
     st.metric("Score", f"{state.correct_count} out of {len(state.words)} correct")
+    if state.mistakes:
+        st.write("Words to work on:")
+        st.dataframe(state.mistakes, hide_index=True)
+    else:
+        st.success("You spelled every word correctly!")
     if st.button("Practice again", type="primary"):
         start_practice()
     if st.button("Back to lists"):
