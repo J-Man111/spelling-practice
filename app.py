@@ -1,3 +1,4 @@
+import html
 import json
 import os
 import re
@@ -42,15 +43,61 @@ def check_entry(entry):
 
 
 @st.cache_data(show_spinner=False)
-def look_up_definition(word):
-    # Free dictionary API; returns "" if the word isn't found or the site can't be reached
-    url = "https://api.dictionaryapi.dev/api/v2/entries/en/" + urllib.parse.quote(word)
+def fetch_definition(word):
+    # Wiktionary's definition API; it asks apps to identify themselves with a User-Agent.
+    # Errors are raised rather than returned, so a failed lookup isn't cached and can be retried.
+    request = urllib.request.Request(
+        "https://en.wiktionary.org/api/rest_v1/page/definition/" + urllib.parse.quote(word),
+        headers={"User-Agent": "SpellingPractice/1.0 (https://github.com/J-Man111/spelling-practice)"})
+    with urllib.request.urlopen(request, timeout=5) as response:
+        entries = json.load(response).get("en", [])
+    for entry in entries:
+        for item in entry.get("definitions", []):
+            # Definitions come as HTML with links; keep just the text
+            text = html.unescape(re.sub(r"<[^>]+>", "", item.get("definition", ""))).strip()
+            if text:
+                return text
+    return ""
+
+
+@st.cache_data(show_spinner=False)
+def fetch_mw_definition(word, key, dictionary):
+    # Merriam-Webster's API; the key only works with the dictionary it was registered for
+    url = (f"https://www.dictionaryapi.com/api/v3/references/{dictionary}/json/"
+           f"{urllib.parse.quote(word)}?key={urllib.parse.quote(key)}")
+    with urllib.request.urlopen(url, timeout=5) as response:
+        entries = json.load(response)
+    # A word that isn't found comes back as a list of suggested spellings (plain strings)
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("shortdef"):
+            return entry["shortdef"][0]
+    return ""
+
+
+def get_secret(name, default=""):
+    # Secrets live in .streamlit/secrets.toml locally, or in the app's settings on Streamlit Cloud
     try:
-        with urllib.request.urlopen(url, timeout=5) as response:
-            entries = json.load(response)
-        return entries[0]["meanings"][0]["definitions"][0]["definition"]
+        return st.secrets.get(name, default)
     except Exception:
-        return ""
+        return default
+
+
+def look_up_definition(word):
+    # Uses Merriam-Webster if a key is set up, otherwise Wiktionary.
+    # Returns "" if the word isn't found or the site can't be reached.
+    mw_key = get_secret("MW_API_KEY")
+    mw_dictionary = get_secret("MW_DICTIONARY", "collegiate")
+    for attempt in (word, word.lower()):
+        try:
+            if mw_key:
+                definition = fetch_mw_definition(attempt, mw_key, mw_dictionary)
+            else:
+                definition = fetch_definition(attempt)
+        except Exception:
+            definition = ""
+        if definition:
+            return definition
+    return ""
 
 
 def load_list(name):
