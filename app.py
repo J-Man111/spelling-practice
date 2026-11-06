@@ -4,7 +4,6 @@ import re
 import urllib.parse
 import urllib.request
 
-import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 from spellchecker import SpellChecker
@@ -109,9 +108,62 @@ def go(screen):
 
 
 def forget_table_edits():
-    # The tables remember edits under their keys; clear them when a different list is shown
-    state.pop("spelling_editor", None)
-    state.pop("vocab_editor", None)
+    # The list editor is rebuilt from spelling_words/vocab_words the next time it's shown
+    state.editor_ready = False
+
+
+def new_row(word="", definition=""):
+    # Each row gets an id that's never reused, so its text boxes keep their own values
+    state.next_id = state.get("next_id", 0) + 1
+    state[f"w{state.next_id}"] = word
+    state[f"d{state.next_id}"] = definition
+    return state.next_id
+
+
+def setup_editor():
+    state.spelling_ids = [new_row(w) for w in state.spelling_words]
+    state.vocab_ids = [new_row(w, state.definitions.get(w, "")) for w in state.vocab_words]
+    state.list_name_input = state.list_name
+    state.editor_ready = True
+
+
+# Button callbacks for the list editor; they run before the page redraws
+def move_row(row_id, to_vocab):
+    source, target = (state.spelling_ids, state.vocab_ids) if to_vocab else (state.vocab_ids, state.spelling_ids)
+    source.remove(row_id)
+    target.append(row_id)
+
+
+def delete_row(row_id):
+    for ids in (state.spelling_ids, state.vocab_ids):
+        if row_id in ids:
+            ids.remove(row_id)
+
+
+def add_row(to_vocab):
+    (state.vocab_ids if to_vocab else state.spelling_ids).append(new_row())
+
+
+def look_up_missing():
+    found, not_found = 0, []
+    for i in state.vocab_ids:
+        word = " ".join(state.get(f"w{i}", "").split())
+        if word and not state.get(f"d{i}", "").strip():
+            definition = look_up_definition(word)
+            if definition:
+                state[f"d{i}"] = definition
+                found += 1
+            else:
+                not_found.append(word)
+    state.notice = f"Filled in {found} definitions. Check them against your book before saving."
+    if not_found:
+        state.notice += " No definition found for: " + ", ".join(not_found) + "."
+
+
+def editor_pairs(ids):
+    # The (word, definition) pairs currently typed into the editor, skipping blank rows
+    pairs = [(" ".join(state.get(f"w{i}", "").split()), state.get(f"d{i}", "").strip()) for i in ids]
+    return [(w, d) for w, d in pairs if w]
 
 
 def say(text):
@@ -146,16 +198,6 @@ def show_notice():
     if state.notice:
         st.info(state.notice)
         state.notice = None
-
-
-def clean_rows(rows):
-    # Turn the table's rows into (word, definition) pairs, dropping empty rows
-    def text(value):
-        return value if isinstance(value, str) else ""  # New rows can hold None or NaN
-
-    pairs = [(" ".join(text(row.get("Word")).split()), text(row.get("Definition")).strip())
-             for row in rows.to_dict("records")]
-    return [(w, d) for w, d in pairs if w]
 
 
 st.title("Spelling Practice")
@@ -244,53 +286,50 @@ elif state.screen == "enter":
 elif state.screen in ("review", "view"):
     # "review" is the last step of making a new list; "view" opens a saved list from the home screen
     viewing = state.screen == "view"
+    if not state.get("editor_ready"):
+        setup_editor()
     st.subheader(state.list_name if viewing else "Check your list")
     show_notice()
-    st.write("Click a word or definition to change it. Use the + below a table to add a word, "
-             "or select a row and press Delete to remove it.")
-    with st.form("review_form"):
-        st.markdown("**Spelling words** (spelling test only)")
-        spelling_rows = st.data_editor(
-            pd.DataFrame({"Word": state.spelling_words}, dtype=str),
-            num_rows="dynamic", hide_index=True, use_container_width=True, key="spelling_editor",
-            column_config={"Word": st.column_config.TextColumn()})
-        st.markdown("**Vocabulary words** (spelling test and definition test)")
-        vocab_rows = st.data_editor(
-            pd.DataFrame({"Word": state.vocab_words,
-                          "Definition": [state.definitions.get(w, "") for w in state.vocab_words]}, dtype=str),
-            num_rows="dynamic", hide_index=True, use_container_width=True, key="vocab_editor",
-            column_config={"Word": st.column_config.TextColumn(),
-                           "Definition": st.column_config.TextColumn(width="large")})
-        name = st.text_input("List name", value=state.list_name, placeholder="words").strip() or "words"
-        look_up = st.form_submit_button("Look up missing definitions")
-        if viewing:
-            save = st.form_submit_button("Save changes", type="primary")
-            skip = False
-            back = st.form_submit_button("Back to lists")
-        else:
-            save = st.form_submit_button("Save and practice", type="primary")
-            skip = st.form_submit_button("Practice without saving")
-            back = False
+
+    st.markdown("**Spelling words** (spelling test only)")
+    for i in state.spelling_ids:
+        word_col, move_col, delete_col = st.columns([5, 2, 1], vertical_alignment="center")
+        word_col.text_input("Word", key=f"w{i}", label_visibility="collapsed", placeholder="Word")
+        move_col.button("Move to vocab", key=f"move{i}", on_click=move_row, args=(i, True),
+                        use_container_width=True)
+        delete_col.button("✕", key=f"delete{i}", on_click=delete_row, args=(i,), help="Delete this word")
+    st.button("+ Add spelling word", on_click=add_row, args=(False,))
+
+    st.markdown("**Vocabulary words** (spelling test and definition test)")
+    for i in state.vocab_ids:
+        word_col, definition_col, move_col, delete_col = st.columns([3, 5, 2, 1], vertical_alignment="center")
+        word_col.text_input("Word", key=f"w{i}", label_visibility="collapsed", placeholder="Word")
+        definition_col.text_input("Definition", key=f"d{i}", label_visibility="collapsed", placeholder="Definition")
+        move_col.button("Move to spelling", key=f"move{i}", on_click=move_row, args=(i, False),
+                        use_container_width=True)
+        delete_col.button("✕", key=f"delete{i}", on_click=delete_row, args=(i,), help="Delete this word")
+    add_col, look_up_col = st.columns(2)
+    add_col.button("+ Add vocabulary word", on_click=add_row, args=(True,))
+    with look_up_col:
+        st.button("Look up missing definitions", on_click=look_up_missing)
+
+    st.divider()
+    name = st.text_input("List name", key="list_name_input", placeholder="words").strip() or "words"
+    if viewing:
+        save_col, back_col = st.columns(2)
+        save = save_col.button("Save changes", type="primary", use_container_width=True)
+        skip = False
+        back = back_col.button("Back to lists", use_container_width=True)
+    else:
+        save_col, skip_col = st.columns(2)
+        save = save_col.button("Save and practice", type="primary", use_container_width=True)
+        skip = skip_col.button("Practice without saving", use_container_width=True)
+        back = False
     if back:
         go("home")
 
-    spelling_pairs = clean_rows(spelling_rows)
-    vocab_pairs = clean_rows(vocab_rows)
-    if look_up:
-        with st.spinner("Looking up definitions..."):
-            missing = [w for w, d in vocab_pairs if not d]
-            found = {w: look_up_definition(w) for w in missing}
-        state.spelling_words = [w for w, _ in spelling_pairs]
-        state.vocab_words = [w for w, _ in vocab_pairs]
-        state.definitions = {w: d or found.get(w, "") for w, d in vocab_pairs if d or found.get(w)}
-        state.list_name = name if name != "words" else state.list_name
-        not_found = [w for w in missing if not found[w]]
-        state.notice = (f"Filled in {len(missing) - len(not_found)} definitions. "
-                        "Check them against your book before saving.")
-        if not_found:
-            state.notice += " No definition found for: " + ", ".join(not_found) + "."
-        forget_table_edits()  # Show the tables again with the new definitions
-        st.rerun()
+    spelling_pairs = editor_pairs(state.spelling_ids)
+    vocab_pairs = editor_pairs(state.vocab_ids)
     if save or skip:
         # Re-check every word, since edits could have added typos
         problems = [f"{w}: {p}" for w, _ in spelling_pairs + vocab_pairs if (p := check_entry(w))]
