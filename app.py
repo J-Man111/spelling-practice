@@ -1,6 +1,8 @@
+import difflib
 import html
 import json
 import os
+import random
 import re
 import urllib.parse
 import urllib.request
@@ -26,6 +28,13 @@ spell = get_spellchecker()
 
 # Small words that can stay lowercase inside a name, like "Gulf of Mexico"
 JOINING_WORDS = {"of", "the", "and", "de", "la", "du"}
+
+
+def close_enough(answer, word):
+    # True when the answer looks like the word, e.g. "valient" for "valiant" (case is ignored).
+    # A ratio of 0.8 allows about one wrong letter in five.
+    a, b = " ".join(answer.lower().split()), word.lower()
+    return difflib.SequenceMatcher(None, a, b).ratio() >= 0.8
 
 
 def check_entry(entry):
@@ -144,6 +153,7 @@ state.setdefault("test_words", [])
 state.setdefault("current", 0)
 state.setdefault("correct_count", 0)
 state.setdefault("mistakes", [])
+state.setdefault("misspelled", [])
 state.setdefault("list_name", "")
 state.setdefault("notice", None)
 state.setdefault("speak_id", 0)
@@ -231,12 +241,14 @@ def start_practice(mode=None):
     if state.mode == "definition":
         # Only vocabulary words with a definition are in the definition test
         state.test_words = [w for w in state.vocab_words if state.definitions.get(w)]
+        random.shuffle(state.test_words)
     else:
         # The spelling test covers both spelling and vocabulary words
         state.test_words = state.spelling_words + state.vocab_words
     state.current = 0
     state.correct_count = 0
     state.mistakes = []
+    state.misspelled = []
     go("practice")
 
 
@@ -420,6 +432,10 @@ elif state.screen == "practice":
         # Record the answer and move straight on; results are only shown at the end
         if answer == word:
             state.correct_count += 1
+        elif state.mode == "definition" and close_enough(answer, word):
+            # The definition test checks that you know the word, so a misspelling still counts
+            state.correct_count += 1
+            state.misspelled.append({"Your answer": answer, "Correct spelling": word})
         elif state.mode == "definition":
             state.mistakes.append({"Definition": state.definitions[word], "Your answer": answer, "Correct word": word})
         else:
@@ -435,6 +451,9 @@ elif state.screen == "results":
         st.dataframe(state.mistakes, hide_index=True)
     else:
         st.success("You got every word correct!")
+    if state.misspelled:
+        st.write("Right word, but check the spelling (these still counted as correct):")
+        st.dataframe(state.misspelled, hide_index=True)
     if st.button("Practice again", type="primary"):
         start_practice()
     if st.button("Back to lists"):
