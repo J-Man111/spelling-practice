@@ -1,4 +1,3 @@
-import difflib
 import html
 import json
 import os
@@ -30,11 +29,24 @@ spell = get_spellchecker()
 JOINING_WORDS = {"of", "the", "and", "de", "la", "du"}
 
 
+def letter_mistakes(a, b):
+    # Counts wrong, missing, extra, or swapped letters needed to turn a into b
+    prev2, prev = None, list(range(len(b) + 1))
+    for i in range(1, len(a) + 1):
+        cur = [i] + [0] * len(b)
+        for j in range(1, len(b) + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                cur[j] = min(cur[j], prev2[j - 2] + 1)
+        prev2, prev = prev, cur
+    return prev[-1]
+
+
 def close_enough(answer, word):
-    # True when the answer looks like the word, e.g. "valient" for "valiant" (case is ignored).
-    # A ratio of 0.8 allows about one wrong letter in five.
+    # True when the answer has at most two letter mistakes, e.g. "valient" for "valiant" (case is ignored)
     a, b = " ".join(answer.lower().split()), word.lower()
-    return difflib.SequenceMatcher(None, a, b).ratio() >= 0.8
+    return letter_mistakes(a, b) <= 2
 
 
 def check_entry(entry):
