@@ -235,34 +235,86 @@ def editor_pairs(ids):
     return [(w, d) for w, d in pairs if w]
 
 
+# Shared browser-side speech code: the voice list only exists in the browser, so the chosen voice is
+# remembered in the browser's localStorage rather than in Streamlit
+VOICE_JS = """
+const synth = (window.parent || window).speechSynthesis;
+const VOICE_KEY = "spellingVoice";
+function savedVoiceName() {
+    try { return (window.parent || window).localStorage.getItem(VOICE_KEY) || ""; } catch (e) { return ""; }
+}
+function saveVoiceName(name) {
+    try { (window.parent || window).localStorage.setItem(VOICE_KEY, name); } catch (e) {}
+}
+function englishVoices() {
+    // Prefer the clearer neural voices (Edge "Natural"/"Online", Chrome "Google") over the old robotic ones.
+    // "Multilingual" voices guess the language from the text, so single words like "prudent" come out French.
+    const rank = v => (/multilingual/i.test(v.name) ? 10 : 0)
+                    + (/natural/i.test(v.name) ? 0 : /online|google/i.test(v.name) ? 1 : 2)
+                    + (v.lang === "en-US" ? 0 : 0.5);
+    return synth.getVoices().filter(v => v.lang.startsWith("en")).sort((a, b) => rank(a) - rank(b));
+}
+function pickVoice() {
+    const voices = englishVoices();
+    return voices.find(v => v.name === savedVoiceName()) || voices[0];
+}
+function speak(text) {
+    synth.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    const voice = pickVoice();
+    if (voice) { u.voice = voice; u.lang = voice.lang; }
+    u.rate = 0.8;  // a bit slower so each sound is distinct
+    synth.speak(u);
+}
+function whenVoicesReady(fn) {
+    // The voice list loads in the background the first time, so wait for it if it's still empty
+    if (synth.getVoices().length) fn();
+    else synth.addEventListener("voiceschanged", fn, {once: true});
+}
+"""
+
+
 def say(text):
-    # Speech happens in the browser; speak_id changes every time so the snippet re-runs even for the same word
+    # speak_id changes every time so the snippet re-runs even for the same word
     state.speak_id += 1
     components.html(
-        f"""<script>
-        const synth = (window.parent || window).speechSynthesis;
-        function pickVoice() {{
-            // Prefer the clearer neural voices (Edge "Natural"/"Online", Chrome "Google") over the old robotic ones
-            const english = synth.getVoices().filter(v => v.lang.startsWith("en"));
-            // "Multilingual" voices guess the language from the text, so single words like "prudent" come out French
-            const rank = v => (/multilingual/i.test(v.name) ? 10 : 0)
-                            + (/natural/i.test(v.name) ? 0 : /online|google/i.test(v.name) ? 1 : 2)
-                            + (v.lang === "en-US" ? 0 : 0.5);
-            return english.sort((a, b) => rank(a) - rank(b))[0];
-        }}
-        function speak() {{
-            synth.cancel();
-            const u = new SpeechSynthesisUtterance({json.dumps(text)});
-            const voice = pickVoice();
-            if (voice) {{ u.voice = voice; u.lang = voice.lang; }}
-            u.rate = 0.8;  // a bit slower so each sound is distinct
-            synth.speak(u);
-        }}
-        // The voice list loads in the background the first time, so wait for it if it's still empty
-        if (synth.getVoices().length) speak();
-        else synth.addEventListener("voiceschanged", speak, {{once: true}});
+        f"""<script>{VOICE_JS}
+        whenVoicesReady(() => speak({json.dumps(text)}));
         </script><!-- {state.speak_id} -->""",
         height=0,
+    )
+
+
+def voice_picker():
+    components.html(
+        f"""
+        <style>
+            body {{ margin: 0; font-family: "Source Sans Pro", sans-serif; font-size: 14px; color: #31333f; }}
+            @media (prefers-color-scheme: dark) {{ body {{ color: #fafafa; }} }}
+            label {{ display: block; margin-bottom: 4px; }}
+            select {{ width: 100%; padding: 6px; font-size: 14px; border-radius: 6px; margin-bottom: 8px; }}
+            button {{ padding: 6px 12px; font-size: 14px; border-radius: 6px; cursor: pointer; }}
+        </style>
+        <label for="voice">Voice</label>
+        <select id="voice"></select>
+        <button id="test">Test voice</button>
+        <script>{VOICE_JS}
+        const menu = document.getElementById("voice");
+        function fill() {{
+            const current = pickVoice();
+            menu.innerHTML = "";
+            for (const v of englishVoices()) {{
+                const opt = new Option(v.name + " (" + v.lang + ")", v.name);
+                opt.selected = current && v.name === current.name;
+                menu.add(opt);
+            }}
+            if (!menu.options.length) menu.add(new Option("No English voices found", ""));
+        }}
+        whenVoicesReady(fill);
+        menu.addEventListener("change", () => {{ saveVoiceName(menu.value); speak("prudent"); }});
+        document.getElementById("test").addEventListener("click", () => speak("prudent"));
+        </script>""",
+        height=110,
     )
 
 
@@ -289,6 +341,9 @@ def show_notice():
         state.notice = None
 
 
+with st.sidebar:
+    voice_picker()
+
 st.title("Spelling Practice")
 st.caption("Listen to each word and type how it's spelled, or read a definition and type the word.")
 
@@ -300,10 +355,26 @@ if state.screen == "home":
         st.write("No saved lists yet.")
     for name in saved_lists:
         st.markdown(f"**{name}**")
-        spelling_col, definition_col, view_col = st.columns(3)
+        if state.get("confirm_delete") == name:
+            # Deleting can't be undone, so ask first
+            st.warning(f"Delete {name} for good? This can't be undone.")
+            yes_col, no_col = st.columns(2)
+            if yes_col.button("Yes, delete it", key="yes_del_" + name, type="primary", use_container_width=True):
+                os.remove(os.path.join(LISTS_DIR, name + ".txt"))
+                state.confirm_delete = None
+                state.notice = f"Deleted {name}."
+                st.rerun()
+            if no_col.button("Cancel", key="no_del_" + name, use_container_width=True):
+                state.confirm_delete = None
+                st.rerun()
+            continue
+        spelling_col, definition_col, view_col, delete_col = st.columns(4)
         spelling = spelling_col.button("Spelling test", key="spell_" + name, use_container_width=True)
         definition = definition_col.button("Definition test", key="def_" + name, use_container_width=True)
         view = view_col.button("View list", key="view_" + name, use_container_width=True)
+        if delete_col.button("Delete list", key="del_" + name, use_container_width=True):
+            state.confirm_delete = name
+            st.rerun()
         if spelling or definition or view:
             state.spelling_words, state.vocab_words, state.definitions = load_list(name)
             state.list_name = name
