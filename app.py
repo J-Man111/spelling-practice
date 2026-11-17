@@ -241,8 +241,24 @@ def say(text):
     components.html(
         f"""<script>
         const synth = (window.parent || window).speechSynthesis;
-        synth.cancel();
-        synth.speak(new SpeechSynthesisUtterance({json.dumps(text)}));
+        function pickVoice() {{
+            // Prefer the clearer neural voices (Edge "Natural"/"Online", Chrome "Google") over the old robotic ones
+            const english = synth.getVoices().filter(v => v.lang.startsWith("en"));
+            const rank = v => (/natural/i.test(v.name) ? 0 : /online|google/i.test(v.name) ? 1 : 2)
+                            + (v.lang === "en-US" ? 0 : 0.5);
+            return english.sort((a, b) => rank(a) - rank(b))[0];
+        }}
+        function speak() {{
+            synth.cancel();
+            const u = new SpeechSynthesisUtterance({json.dumps(text)});
+            const voice = pickVoice();
+            if (voice) {{ u.voice = voice; u.lang = voice.lang; }}
+            u.rate = 0.8;  // a bit slower so each sound is distinct
+            synth.speak(u);
+        }}
+        // The voice list loads in the background the first time, so wait for it if it's still empty
+        if (synth.getVoices().length) speak();
+        else synth.addEventListener("voiceschanged", speak, {{once: true}});
         </script><!-- {state.speak_id} -->""",
         height=0,
     )
