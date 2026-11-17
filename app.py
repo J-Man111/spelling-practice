@@ -244,7 +244,9 @@ def say(text):
         function pickVoice() {{
             // Prefer the clearer neural voices (Edge "Natural"/"Online", Chrome "Google") over the old robotic ones
             const english = synth.getVoices().filter(v => v.lang.startsWith("en"));
-            const rank = v => (/natural/i.test(v.name) ? 0 : /online|google/i.test(v.name) ? 1 : 2)
+            // "Multilingual" voices guess the language from the text, so single words like "prudent" come out French
+            const rank = v => (/multilingual/i.test(v.name) ? 10 : 0)
+                            + (/natural/i.test(v.name) ? 0 : /online|google/i.test(v.name) ? 1 : 2)
                             + (v.lang === "en-US" ? 0 : 0.5);
             return english.sort((a, b) => rank(a) - rank(b))[0];
         }}
