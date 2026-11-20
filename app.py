@@ -325,8 +325,17 @@ def start_practice(mode=None):
         state.test_words = [w for w in state.vocab_words if state.definitions.get(w)]
         random.shuffle(state.test_words)
     else:
-        # The spelling test covers both spelling and vocabulary words
-        state.test_words = state.spelling_words + state.vocab_words
+        # The spelling test covers both spelling and vocabulary words, except on Ethan's lists,
+        # which only test the spelling words (the name is checked in any capitalization)
+        name = state.list_name or state.get("list_name_input", "")
+        if "ethan" in name.lower():
+            state.test_words = list(state.spelling_words)
+        else:
+            state.test_words = state.spelling_words + state.vocab_words
+        if not state.test_words:
+            state.notice = f"{name} has no spelling words to test yet."
+            go("view")
+            return
     state.current = 0
     state.correct_count = 0
     state.mistakes = []
