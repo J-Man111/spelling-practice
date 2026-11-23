@@ -3,6 +3,7 @@ import json
 import os
 import random
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -27,6 +28,9 @@ spell = get_spellchecker()
 
 # Small words that can stay lowercase inside a name, like "Gulf of Mexico"
 JOINING_WORDS = {"of", "the", "and", "de", "la", "du"}
+
+# Abbreviations that start names, like "St. Louis" or "Mt. Everest"
+ABBREVIATIONS = {"st.", "mt.", "ft.", "pt.", "mr.", "mrs.", "ms.", "dr."}
 
 
 def letter_mistakes(a, b):
@@ -54,13 +58,37 @@ def check_entry(entry):
     parts = entry.split()
     if not parts:
         return "Please enter a word."
-    misspelled = [p for p in parts if not spell.known([p])]
+    # Entries with more than one word must be proper nouns, e.g. "Mediterranean Sea"
+    is_name = all(p[0].isupper() for p in parts if p.lower() not in JOINING_WORDS)
+    if len(parts) > 1 and not is_name:
+        return "Entries with more than one word must be names, with each word capitalized (like Mediterranean Sea)."
+    misspelled = [p for p in parts if p.lower() not in ABBREVIATIONS and not spell.known([p])]
+    # Place names like "Los Angeles" use words the spell checker doesn't know, so look the whole name up instead
+    if misspelled and is_name and len(parts) > 1 and is_known_name(entry):
+        misspelled = []
     if misspelled:
         return f"Not real words: {', '.join(misspelled)}. Please check the spelling."
-    # Entries with more than one word must be proper nouns, e.g. "Mediterranean Sea"
-    if len(parts) > 1 and any(not p[0].isupper() for p in parts if p.lower() not in JOINING_WORDS):
-        return "Entries with more than one word must be names, with each word capitalized (like Mediterranean Sea)."
     return None
+
+
+@st.cache_data(show_spinner=False)
+def wiktionary_has(entry):
+    # True/False when Wiktionary gives a clear answer (cached); other errors are raised so they're retried later
+    try:
+        fetch_definition(entry)
+        return True
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return False
+        raise
+
+
+def is_known_name(entry):
+    # If the lookup can't run (no internet), the name is accepted rather than blocking the list
+    try:
+        return wiktionary_has(entry)
+    except Exception:
+        return True
 
 
 @st.cache_data(show_spinner=False)
